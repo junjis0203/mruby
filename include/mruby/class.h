@@ -63,6 +63,8 @@ void mrb_define_method_vm(mrb_state*, struct RClass*, mrb_sym, mrb_value);
 void mrb_define_method_raw(mrb_state*, struct RClass*, mrb_sym, struct RProc *);
 void mrb_define_method_id(mrb_state *mrb, struct RClass *c, mrb_sym mid, mrb_func_t func, int aspec);
 
+int mrb_check_op_overridden(mrb_state *mrb, mrb_value obj, mrb_sym op);
+
 struct RClass *mrb_class_outer_module(mrb_state*, struct RClass *);
 struct RProc *mrb_method_search_vm(mrb_state*, struct RClass**, mrb_sym);
 struct RProc *mrb_method_search(mrb_state*, struct RClass*, mrb_sym);

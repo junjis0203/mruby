@@ -323,6 +323,47 @@ mrb_define_method(mrb_state *mrb, struct RClass *c, const char *name, mrb_func_t
   mrb_define_method_id(mrb, c, mrb_intern(mrb, name), func, aspec);
 }
 
+static int op2index(mrb_state *mrb, mrb_sym op)
+{
+  /* TODO: more efficient way */
+  if (op == mrb_intern2(mrb, "+",  1))  return 0;
+  if (op == mrb_intern2(mrb, "-",  1))  return 1;
+  if (op == mrb_intern2(mrb, "*",  1))  return 2;
+  if (op == mrb_intern2(mrb, "/",  1))  return 3;
+  if (op == mrb_intern2(mrb, "==", 2)) return 4;
+  if (op == mrb_intern2(mrb, "<",  1))  return 5;
+  if (op == mrb_intern2(mrb, "<=", 2)) return 6;
+  if (op == mrb_intern2(mrb, ">",  1))  return 7;
+  if (op == mrb_intern2(mrb, ">=", 2)) return 8;
+  return -1;
+}
+
+static void mrb_override_op(mrb_state *mrb, struct RClass *c, mrb_sym op)
+{
+  if (c == mrb->fixnum_class || c == mrb->float_class || c == mrb->string_class)
+  {
+    int index = op2index(mrb, op);
+    if (index != -1) {
+      /* MRB_NUM_OP_ADD and MRB_STR_OP_ADD are same value */
+      FL_SET(mrb_obj_value(c), MRB_NUM_OP_ADD << index);
+    }
+  }
+}
+
+int mrb_check_op_overridden(mrb_state *mrb, mrb_value obj, mrb_sym op)
+{
+  switch (mrb_type(obj)) {
+  case MRB_TT_FIXNUM:
+    return FL_TEST(mrb_obj_value(mrb->fixnum_class), MRB_NUM_OP_ADD << op2index(mrb, op));
+  case MRB_TT_FLOAT:
+    return FL_TEST(mrb_obj_value(mrb->float_class),  MRB_NUM_OP_ADD << op2index(mrb, op));
+  case MRB_TT_STRING:
+    return FL_TEST(mrb_obj_value(mrb->string_class), MRB_STR_OP_ADD << op2index(mrb, op));
+  default:
+    return 0;
+  }
+}
+
 void
 mrb_define_method_vm(mrb_state *mrb, struct RClass *c, mrb_sym name, mrb_value body)
 {
@@ -334,6 +375,7 @@ mrb_define_method_vm(mrb_state *mrb, struct RClass *c, mrb_sym name, mrb_value b
   k = kh_put(mt, h, name);
   p = mrb_proc_ptr(body);
   kh_value(h, k) = p;
+  mrb_override_op(mrb, c, name);
 }
 
 static mrb_value

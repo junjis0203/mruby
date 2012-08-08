@@ -1197,28 +1197,35 @@ mrb_run(mrb_state *mrb, struct RProc *proc, mrb_value self)
 #define OP_MATH(op,iop,s) do {\
   int a = GETARG_A(i);\
   /* need to check if op is overridden */\
-  switch (TYPES2(mrb_type(regs[a]),mrb_type(regs[a+1]))) {\
-  case TYPES2(MRB_TT_FIXNUM,MRB_TT_FIXNUM):\
-    regs[a] = iop(mrb, regs[a], regs[a+1]);\
-    break;\
-  case TYPES2(MRB_TT_FIXNUM,MRB_TT_FLOAT):\
-    {\
-      mrb_int x = regs[a].value.i;\
-      mrb_float y = regs[a+1].value.f;\
-      SET_FLOAT_VALUE(regs[a], (mrb_float)x op y);\
-    }\
-    break;\
-  case TYPES2(MRB_TT_FLOAT,MRB_TT_FIXNUM):\
-    OP_MATH_BODY(op,f,i);\
-    break;\
-  case TYPES2(MRB_TT_FLOAT,MRB_TT_FLOAT):\
-    OP_MATH_BODY(op,f,f);\
-    break;\
-    s\
-  default:\
+  if (mrb_check_op_overridden(mrb, regs[a], mrb_intern(mrb, #op))) {\
     SET_NIL_VALUE(regs[a+2]);\
     i = MKOP_ABC(OP_SEND, a, GETARG_B(i), GETARG_C(i));\
     goto L_SEND;\
+  }\
+  else {\
+    switch (TYPES2(mrb_type(regs[a]),mrb_type(regs[a+1]))) {\
+    case TYPES2(MRB_TT_FIXNUM,MRB_TT_FIXNUM):\
+      regs[a] = iop(mrb, regs[a], regs[a+1]);\
+      break;\
+    case TYPES2(MRB_TT_FIXNUM,MRB_TT_FLOAT):\
+      {\
+        mrb_int x = regs[a].value.i;\
+        mrb_float y = regs[a+1].value.f;\
+        SET_FLOAT_VALUE(regs[a], (mrb_float)x op y);\
+      }\
+      break;\
+    case TYPES2(MRB_TT_FLOAT,MRB_TT_FIXNUM):\
+      OP_MATH_BODY(op,f,i);\
+      break;\
+    case TYPES2(MRB_TT_FLOAT,MRB_TT_FLOAT):\
+      OP_MATH_BODY(op,f,f);\
+      break;\
+      s\
+    default:\
+      SET_NIL_VALUE(regs[a+2]);\
+      i = MKOP_ABC(OP_SEND, a, GETARG_B(i), GETARG_C(i));\
+      goto L_SEND;\
+    }\
   }\
 } while (0)
 
@@ -1304,23 +1311,30 @@ mrb_run(mrb_state *mrb, struct RProc *proc, mrb_value self)
 #define OP_CMP(op) do {\
   int a = GETARG_A(i);\
   /* need to check if - is overridden */\
-  switch (TYPES2(mrb_type(regs[a]),mrb_type(regs[a+1]))) {\
-  case TYPES2(MRB_TT_FIXNUM,MRB_TT_FIXNUM):\
-    OP_CMP_BODY(op,i,i);                   \
-    break;\
-  case TYPES2(MRB_TT_FIXNUM,MRB_TT_FLOAT):\
-    OP_CMP_BODY(op,i,f);\
-    break;\
-  case TYPES2(MRB_TT_FLOAT,MRB_TT_FIXNUM):\
-    OP_CMP_BODY(op,f,i);\
-    break;\
-  case TYPES2(MRB_TT_FLOAT,MRB_TT_FLOAT):\
-    OP_CMP_BODY(op,f,f);\
-    break;\
-  default:\
+  if (mrb_check_op_overridden(mrb, regs[a], mrb_intern(mrb, #op))) {\
     SET_NIL_VALUE(regs[a+2]);\
     i = MKOP_ABC(OP_SEND, a, GETARG_B(i), GETARG_C(i));\
     goto L_SEND;\
+  }\
+  else {\
+    switch (TYPES2(mrb_type(regs[a]),mrb_type(regs[a+1]))) {\
+    case TYPES2(MRB_TT_FIXNUM,MRB_TT_FIXNUM):\
+      OP_CMP_BODY(op,i,i);                   \
+      break;\
+    case TYPES2(MRB_TT_FIXNUM,MRB_TT_FLOAT):\
+      OP_CMP_BODY(op,i,f);\
+      break;\
+    case TYPES2(MRB_TT_FLOAT,MRB_TT_FIXNUM):\
+      OP_CMP_BODY(op,f,i);\
+      break;\
+    case TYPES2(MRB_TT_FLOAT,MRB_TT_FLOAT):\
+      OP_CMP_BODY(op,f,f);\
+      break;\
+    default:\
+      SET_NIL_VALUE(regs[a+2]);\
+      i = MKOP_ABC(OP_SEND, a, GETARG_B(i), GETARG_C(i));\
+      goto L_SEND;\
+    }\
   }\
 } while (0)
 

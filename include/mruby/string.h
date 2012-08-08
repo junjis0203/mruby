@@ -48,6 +48,7 @@ struct RString {
 #define RSTRING_CAPA(s)   (RSTRING(s)->aux.capa)
 #define RSTRING_END(s)    (RSTRING(s)->ptr + RSTRING(s)->len)
 #define MRB_STR_SHARED      256
+#define MRB_STR_OP_ADD      512
 
 void mrb_str_decref(mrb_state*, struct mrb_shared_string*);
 mrb_value mrb_str_literal(mrb_state*, mrb_value);
