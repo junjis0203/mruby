@@ -53,7 +53,7 @@ struct RRegexp {
 #define mrb_regex_ptr(r)    ((struct RRegexp*)((r).value.p))
 #define RREGEXP(r)          ((struct RRegexp*)((r).value.p))
 #define RREGEXP_SRC(r)      (RREGEXP(r)->src)
-#define RREGEXP_SRC_PTR(r)  (RREGEXP_SRC(r)->buf)
+#define RREGEXP_SRC_PTR(r)  (RREGEXP_SRC(r)->ptr)
 #define RREGEXP_SRC_LEN(r)  (RREGEXP_SRC(r)->len)
 int re_adjust_startpos(struct re_pattern_buffer *bufp, const char *string, int size, int startpos, int range);
 

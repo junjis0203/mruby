@@ -27,16 +27,16 @@ class String
   # final value.
   #
   # ISO 15.2.10.5.18
-  def gsub(*args, &block)
-    unless (args.size == 1 && block) || args.size == 2
-      raise ArgumentError, "wrong number of arguments"
-    end
-
-    ### *** TODO *** ###
-    unless Object.const_defined?(:Regexp)
-      raise NotImplementedError, "gsub not available (yet)"
-    end
-  end
+#  def gsub(*args, &block)
+#    unless (args.size == 1 && block) || args.size == 2
+#      raise ArgumentError, "wrong number of arguments"
+#    end
+#
+#    ### *** TODO *** ###
+#    unless Object.const_defined?(:Regexp)
+#      raise NotImplementedError, "gsub not available (yet)"
+#    end
+#  end
 
   ##
   # Replace all matches of +pattern+ with +replacement+.

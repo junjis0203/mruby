@@ -26,7 +26,6 @@ const char mrb_digitmap[] = "0123456789abcdefghijklmnopqrstuvwxyz";
 static mrb_value get_pat(mrb_state *mrb, mrb_value pat, mrb_int quote);
 #endif //ENABLE_REGEXP
 static mrb_value str_replace(mrb_state *mrb, struct RString *s1, struct RString *s2);
-static mrb_value mrb_str_subseq(mrb_state *mrb, mrb_value str, int beg, int len);
 
 #define RESIZE_CAPA(s,capacity) do {\
       s->ptr = (char *)mrb_realloc(mrb, s->ptr, (capacity)+1);\
@@ -117,6 +116,89 @@ str_alloc(mrb_state *mrb, struct RClass *c)
   s->aux.capa = 0;
 
   return s;
+}
+
+mrb_value
+mrb_usascii_str_new_cstr(mrb_state *mrb, const char *ptr)
+{
+  mrb_value str = mrb_str_new_cstr(mrb, ptr);//mrb_str_new2(ptr);
+  ENCODING_CODERANGE_SET(mrb, str, mrb_usascii_encindex(), ENC_CODERANGE_7BIT);
+  return str;
+}
+
+#define STR_ENC_GET(mrb, str) mrb_enc_from_index(mrb, ENCODING_GET(mrb, str))
+
+static inline const char *
+search_nonascii(const char *p, const char *e)
+{
+  while (p < e) {
+    if (!ISASCII(*p))
+      return p;
+    p++;
+  }
+  return NULL;
+}
+
+static int
+coderange_scan(const char *p, long len, mrb_encoding *enc)
+{
+    const char *e = p + len;
+
+    if (mrb_enc_to_index(enc) == 0) {
+        /* enc is ASCII-8BIT.  ASCII-8BIT string never be broken. */
+        p = search_nonascii(p, e);
+        return p ? ENC_CODERANGE_VALID : ENC_CODERANGE_7BIT;
+    }
+
+    if (mrb_enc_asciicompat(mrb, enc)) {
+        p = search_nonascii(p, e);
+        if (!p) {
+            return ENC_CODERANGE_7BIT;
+        }
+        while (p < e) {
+            int ret = mrb_enc_precise_mbclen(p, e, enc);
+            if (!MBCLEN_CHARFOUND_P(ret)) {
+                return ENC_CODERANGE_BROKEN;
+            }
+            p += MBCLEN_CHARFOUND_LEN(ret);
+            if (p < e) {
+                p = search_nonascii(p, e);
+                if (!p) {
+                    return ENC_CODERANGE_VALID;
+                }
+            }
+        }
+        if (e < p) {
+            return ENC_CODERANGE_BROKEN;
+        }
+        return ENC_CODERANGE_VALID;
+    }
+
+    while (p < e) {
+        int ret = mrb_enc_precise_mbclen(p, e, enc);
+
+        if (!MBCLEN_CHARFOUND_P(ret)) {
+            return ENC_CODERANGE_BROKEN;
+        }
+        p += MBCLEN_CHARFOUND_LEN(ret);
+    }
+    if (e < p) {
+        return ENC_CODERANGE_BROKEN;
+    }
+    return ENC_CODERANGE_VALID;
+}
+
+int
+mrb_enc_str_coderange(mrb_state *mrb, mrb_value str)
+{
+    int cr = ENC_CODERANGE(str);
+
+    if (cr == ENC_CODERANGE_UNKNOWN) {
+      mrb_encoding *enc = STR_ENC_GET(mrb, str);
+        cr = coderange_scan(RSTRING_PTR(str), RSTRING_LEN(str), enc);
+        ENC_CODERANGE_SET(str, cr);
+    }
+    return cr;
 }
 
 /* char offset to byte offset */
@@ -720,6 +802,19 @@ mrb_str_dup(mrb_state *mrb, mrb_value str)
   return mrb_str_new(mrb, s->ptr, s->len);
 }
 
+#ifdef ENABLE_REGEXP
+static mrb_value
+mrb_str_subpat(mrb_state *mrb, mrb_value str, mrb_value re, mrb_int backref)
+{
+  if (mrb_reg_search(mrb, re, str, 0, 0) >= 0) {
+    mrb_value match = mrb_backref_get(mrb);
+    int nth = mrb_reg_backref_number(mrb, match, mrb_fixnum_value(backref));
+    return mrb_reg_nth_match(mrb, nth, mrb_backref_get(mrb));
+  }
+  return mrb_nil_value();
+}
+#endif //INCLUDE_REGEXP
+
 static mrb_value
 mrb_str_aref(mrb_state *mrb, mrb_value str, mrb_value indx)
 {
@@ -828,7 +923,7 @@ mrb_str_aref_m(mrb_state *mrb, mrb_value str)
   if (argc == 2) {
     if (mrb_type(a1) == MRB_TT_REGEX) {
 #ifdef ENABLE_REGEXP
-      return mrb_str_subpat(mrb, str, argv[0], mrb_fixnum(argv[1]));
+      return mrb_str_subpat(mrb, str, a1, mrb_fixnum(a2));
 #else
       mrb_raise(mrb, E_TYPE_ERROR, "Regexp Class not supported");
       return mrb_nil_value();
@@ -1188,7 +1283,7 @@ mrb_str_eql(mrb_state *mrb, mrb_value self)
   return mrb_false_value();
 }
 
-static mrb_value
+mrb_value
 mrb_str_subseq(mrb_state *mrb, mrb_value str, int beg, int len)
 {
   struct RString *orig, *s;
@@ -1251,7 +1346,7 @@ str_gsub(mrb_state *mrb, mrb_value str, mrb_int bang)
   mrb_int offset, blen, len, last;
   char *sp, *cp;
 
-  if (bang) str_modify(mrb, mrb_str_ptr(self));
+  if (bang) str_modify(mrb, mrb_str_ptr(str));
   mrb_get_args(mrb, "*", &argv, &argc);
   switch (argc) {
     case 1:
@@ -1369,10 +1464,10 @@ mrb_str_gsub(mrb_state *mrb, mrb_value self)
 static mrb_value
 mrb_str_gsub_bang(mrb_state *mrb, mrb_value self)
 {
-  striuct RString *s = mrb_str_ptr(self);
+  struct RString *s = mrb_str_ptr(self);
 
   str_modify(mrb, s);
-  return str_gsub(mrb, s, 1);
+  return str_gsub(mrb, self, 1);
 }
 #endif //ENABLE_REGEXP
 
@@ -1837,7 +1932,7 @@ mrb_str_rindex(mrb_state *mrb, mrb_value str, mrb_value sub, mrb_int pos)
 #ifdef INCLUDE_ENCODING
 /* byte offset to char offset */
 int
-mrb_str_sublen(mrb_state *mrb, mrb_value str, long pos)
+mrb_str_sublen(mrb_state *mrb, mrb_value str, int pos)
 {
   return pos;
 }
@@ -2313,7 +2408,7 @@ mrb_block_given_p()
 static mrb_value
 mrb_str_sub_bang(mrb_state *mrb, mrb_value str)
 {
-  str_modify(mrb, str);
+  str_modify(mrb, mrb_str_ptr(str));
   return mrb_nil_value();
 }
 #endif //ENABLE_REGEXP

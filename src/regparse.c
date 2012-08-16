@@ -34,6 +34,11 @@
 #include <stdarg.h>
 #ifdef ENABLE_REGEXP
 
+/* temporary definition */
+#define xmalloc  malloc
+#define xrealloc realloc
+#define xfree    free
+
 #define WARN_BUFSIZE    256
 
 #define CASE_FOLD_IS_APPLIED_INSIDE_NEGATIVE_CCLASS

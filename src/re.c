@@ -41,7 +41,8 @@ unsigned long ruby_scan_oct(const char*, size_t, size_t*);
 unsigned long ruby_scan_hex(const char*, size_t, size_t*);
 
 static mrb_value mrb_match_to_a(mrb_state *mrb, mrb_value match);
-static mrb_value mrb_reg_preprocess(mrb_state *mrb, const char *p, const char *end, onig_errmsg_buffer err);
+static mrb_value mrb_reg_preprocess(mrb_state *mrb, const char *p, const char *end, mrb_encoding *enc,
+        mrb_encoding **fixed_enc, onig_errmsg_buffer err);
 static void mrb_reg_expr_str(mrb_state *mrb, mrb_value str, const char *s, long len);
 static char * option_to_str(char str[4], int options);
 
@@ -67,7 +68,7 @@ mrb_reg_s_new_instance(mrb_state *mrb, /*int argc, mrb_value *argv, */mrb_value 
 {
   //obj = mrb_obj_alloc(klass);
   //mrb_obj_call_init(obj, argc, argv);...mrb_funcall2(obj, idInitialize, argc, argv);
-  mrb_value argv[16];
+  mrb_value *argv;
   int argc;
   struct RRegexp *re;
 
@@ -310,7 +311,7 @@ static mrb_value
 mrb_reg_s_last_match(mrb_state *mrb, mrb_value self/*int argc, mrb_value *argv*/)
 {
   //mrb_value nth;
-  mrb_value argv[16];
+  mrb_value *argv;
   int argc;
   mrb_value match = mrb_backref_get(mrb);
 
@@ -386,6 +387,7 @@ mrb_reg_prepare_re(mrb_state *mrb, mrb_value re, mrb_value str)
   OnigErrorInfo einfo;
   const char *pattern;
   mrb_value unescaped;
+  mrb_encoding *fixed_enc = 0;
   mrb_encoding *enc = mrb_ascii8bit_encoding(mrb);
 
   mrb_reg_check(mrb, re);
@@ -393,7 +395,8 @@ mrb_reg_prepare_re(mrb_state *mrb, mrb_value re, mrb_value str)
   pattern = RREGEXP_SRC_PTR(re);
 
   unescaped = mrb_reg_preprocess(mrb,
-    pattern, pattern + RREGEXP(re)->src->len, err);
+    pattern, pattern + RREGEXP(re)->src->len, enc,
+    &fixed_enc, err);
 
   if (mrb_nil_p(unescaped)) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "regexp preprocess failed: %s", err);
@@ -515,7 +518,7 @@ mrb_reg_adjust_startpos(mrb_state *mrb, mrb_value re, mrb_value str, mrb_int pos
     range = s->len - pos;
   }
   return re_adjust_startpos(r->ptr,
-            s->buf, s->len,
+            s->ptr, s->len,
             pos, range);
 }
 
@@ -581,6 +584,18 @@ ruby_scan_hex(const char *start, size_t len, size_t *retlen)
     return retval;
 }
 
+static int
+check_unicode_range(unsigned long code, onig_errmsg_buffer err)
+{
+    if ((0xd800 <= code && code <= 0xdfff) || /* Surrogates */
+        0x10ffff < code) {
+        //errcpy(err, "invalid Unicode range");
+        printf("invalid Unicode range");
+        return -1;
+    }
+    return 0;
+}
+
 #define BYTEWIDTH 8
 
 int
@@ -629,6 +644,59 @@ mrb_uv_to_utf8(mrb_state *mrb, char buf[6], unsigned long uv)
   return 0;
 }
 
+static int
+append_utf8(mrb_state *mrb, unsigned long uv,
+        mrb_value buf, mrb_encoding **encp, onig_errmsg_buffer err)
+{
+    if (check_unicode_range(uv, err) != 0)
+        return -1;
+    if (uv < 0x80) {
+        char escbuf[5];
+        snprintf(escbuf, sizeof(escbuf), "\\x%02X", (int)uv);
+        mrb_str_buf_cat(mrb, buf, escbuf, 4);
+    }
+    else {
+        int len;
+        char utf8buf[6];
+        len = mrb_uv_to_utf8(mrb, utf8buf, uv);
+        mrb_str_buf_cat(mrb, buf, utf8buf, len);
+
+        if (*encp == 0)
+            *encp = mrb_utf8_encoding(mrb);
+        else if (*encp != mrb_utf8_encoding(mrb)) {
+            //errcpy(err, "UTF-8 character in non UTF-8 regexp");
+            printf("UTF-8 character in non UTF-8 regexp");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int
+unescape_unicode_bmp(mrb_state *mrb, const char **pp, const char *end,
+        mrb_value buf, mrb_encoding **encp, onig_errmsg_buffer err)
+{
+    const char *p = *pp;
+    size_t len;
+    unsigned long code;
+
+    if (end < p+4) {
+        //errcpy(err, "invalid Unicode escape");
+        printf("invalid Unicode escape");
+        return -1;
+    }
+    code = ruby_scan_hex(p, 4, &len);
+    if (len != 4) {
+        //errcpy(err, "invalid Unicode escape");
+        printf("invalid Unicode escape");
+        return -1;
+    }
+    if (append_utf8(mrb, code, buf, encp, err) != 0)
+        return -1;
+    *pp = p + 4;
+    return 0;
+}
+
 unsigned long
 ruby_scan_oct(const char *start, size_t len, size_t *retlen)
 {
@@ -643,10 +711,358 @@ ruby_scan_oct(const char *start, size_t len, size_t *retlen)
     return retval;
 }
 
-static mrb_value
-mrb_reg_preprocess(mrb_state *mrb, const char *p, const char *end, onig_errmsg_buffer err)
+static int
+read_escaped_byte(const char **pp, const char *end, onig_errmsg_buffer err)
 {
-  return mrb_nil_value();
+    const char *p = *pp;
+    int code;
+    int meta_prefix = 0, ctrl_prefix = 0;
+    size_t len;
+
+    if (p == end || *p++ != '\\') {
+        //errcpy(err, "too short escaped multibyte character");
+        printf("too short escaped multibyte character");
+        return -1;
+    }
+
+again:
+    if (p == end) {
+        //errcpy(err, "too short escape sequence");
+        printf("too short escape sequence");
+        return -1;
+    }
+    switch (*p++) {
+      case '\\': code = '\\'; break;
+      case 'n': code = '\n'; break;
+      case 't': code = '\t'; break;
+      case 'r': code = '\r'; break;
+      case 'f': code = '\f'; break;
+      case 'v': code = '\013'; break;
+      case 'a': code = '\007'; break;
+      case 'e': code = '\033'; break;
+
+      /* \OOO */
+      case '0': case '1': case '2': case '3':
+      case '4': case '5': case '6': case '7':
+        p--;
+        code = scan_oct(p, end < p+3 ? end-p : 3, &len);
+        p += len;
+        break;
+
+      case 'x': /* \xHH */
+        code = scan_hex(p, end < p+2 ? end-p : 2, &len);
+        if (len < 1) {
+            //errcpy(err, "invalid hex escape");
+            printf("invalid hex escape");
+            return -1;
+        }
+        p += len;
+        break;
+
+      case 'M': /* \M-X, \M-\C-X, \M-\cX */
+        if (meta_prefix) {
+            //errcpy(err, "duplicate meta escape");
+            printf("duplicate meta escape");
+            return -1;
+        }
+        meta_prefix = 1;
+        if (p+1 < end && *p++ == '-' && (*p & 0x80) == 0) {
+            if (*p == '\\') {
+                p++;
+                goto again;
+            }
+            else {
+                code = *p++;
+                break;
+            }
+        }
+        //errcpy(err, "too short meta escape");
+        printf("too short meta escape");
+        return -1;
+
+      case 'C': /* \C-X, \C-\M-X */
+        if (p == end || *p++ != '-') {
+            //errcpy(err, "too short control escape");
+            printf("too short control escape");
+            return -1;
+        }
+      case 'c': /* \cX, \c\M-X */
+        if (ctrl_prefix) {
+            //errcpy(err, "duplicate control escape");
+            printf("duplicate control escape");
+            return -1;
+        }
+        ctrl_prefix = 1;
+        if (p < end && (*p & 0x80) == 0) {
+            if (*p == '\\') {
+                p++;
+                goto again;
+            }
+            else {
+                code = *p++;
+                break;
+            }
+        }
+        //errcpy(err, "too short control escape");
+        printf("too short control escape");
+        return -1;
+
+      default:
+        //errcpy(err, "unexpected escape sequence");
+        printf("unexpected escape sequence");
+        return -1;
+    }
+    if (code < 0 || 0xff < code) {
+        //errcpy(err, "invalid escape code");
+        printf("invalid escape code");
+        return -1;
+    }
+
+    if (ctrl_prefix)
+        code &= 0x1f;
+    if (meta_prefix)
+        code |= 0x80;
+
+    *pp = p;
+    return code;
+}
+
+static int
+unescape_escaped_nonascii(mrb_state *mrb, const char **pp, const char *end, mrb_encoding *enc,
+        mrb_value buf, mrb_encoding **encp, onig_errmsg_buffer err)
+{
+    const char *p = *pp;
+    int chmaxlen = mrb_enc_mbmaxlen(enc);
+    //char *chbuf = ALLOCA_N(char, chmaxlen);
+    char *chbuf = mrb_malloc(mrb, chmaxlen);
+    int chlen = 0;
+    int byte;
+    int l;
+
+    memset(chbuf, 0, chmaxlen);
+
+    byte = read_escaped_byte(&p, end, err);
+    if (byte == -1) {
+        return -1;
+    }
+
+    chbuf[chlen++] = byte;
+    while (chlen < chmaxlen &&
+           MBCLEN_NEEDMORE_P(mrb_enc_precise_mbclen(chbuf, chbuf+chlen, enc))) {
+        byte = read_escaped_byte(&p, end, err);
+        if (byte == -1) {
+            return -1;
+        }
+        chbuf[chlen++] = byte;
+    }
+
+    l = mrb_enc_precise_mbclen(chbuf, chbuf+chlen, enc);
+    if (MBCLEN_INVALID_P(l)) {
+        //errcpy(err, "invalid multibyte escape");
+        printf("invalid multibyte escape");
+        return -1;
+    }
+    if (1 < chlen || (chbuf[0] & 0x80)) {
+        mrb_str_buf_cat(mrb, buf, chbuf, chlen);
+
+        if (*encp == 0)
+            *encp = enc;
+        else if (*encp != enc) {
+            //errcpy(err, "escaped non ASCII character in UTF-8 regexp");
+            printf("escaped non ASCII character in UTF-8 regexp");
+            return -1;
+        }
+    }
+    else {
+        char escbuf[5];
+        snprintf(escbuf, sizeof(escbuf), "\\x%02X", chbuf[0]&0xff);
+        mrb_str_buf_cat(mrb, buf, escbuf, 4);
+    }
+    *pp = p;
+    return 0;
+}
+
+static int
+unescape_unicode_list(mrb_state *mrb, const char **pp, const char *end,
+        mrb_value buf, mrb_encoding **encp, onig_errmsg_buffer err)
+{
+    const char *p = *pp;
+    int has_unicode = 0;
+    unsigned long code;
+    size_t len;
+
+    while (p < end && ISSPACE(*p)) p++;
+
+    while (1) {
+        code = ruby_scan_hex(p, end-p, &len);
+        if (len == 0)
+            break;
+        if (6 < len) { /* max 10FFFF */
+            //errcpy(err, "invalid Unicode range");
+            printf("invalid Unicode range");
+            return -1;
+        }
+        p += len;
+        if (append_utf8(mrb, code, buf, encp, err) != 0)
+            return -1;
+        has_unicode = 1;
+
+        while (p < end && ISSPACE(*p)) p++;
+    }
+
+    if (has_unicode == 0) {
+        //errcpy(err, "invalid Unicode list");
+        printf("invalid Unicode list");
+        return -1;
+    }
+
+    *pp = p;
+
+    return 0;
+}
+
+static int
+unescape_nonascii(mrb_state *mrb, const char *p, const char *end, mrb_encoding *enc,
+        mrb_value buf, mrb_encoding **encp, int *has_property,
+        onig_errmsg_buffer err)
+{
+    char c;
+    char smallbuf[2];
+
+    while (p < end) {
+        int chlen = mrb_enc_precise_mbclen(p, end, enc);
+        if (!MBCLEN_CHARFOUND_P(chlen)) {
+            //errcpy(err, "invalid multibyte character");
+            printf("invalid multibyte character");
+            return -1;
+        }
+        chlen = MBCLEN_CHARFOUND_LEN(chlen);
+        if (1 < chlen || (*p & 0x80)) {
+            mrb_str_buf_cat(mrb, buf, p, chlen);
+            p += chlen;
+            if (*encp == 0)
+                *encp = enc;
+            else if (*encp != enc) {
+                //errcpy(err, "non ASCII character in UTF-8 regexp");
+                printf("non ASCII character in UTF-8 regexp");
+                return -1;
+            }
+            continue;
+        }
+
+        switch (c = *p++) {
+          case '\\':
+            if (p == end) {
+                //errcpy(err, "too short escape sequence");
+                printf("too short escape sequence");
+                return -1;
+            }
+            switch (c = *p++) {
+              case '1': case '2': case '3':
+              case '4': case '5': case '6': case '7': /* \O, \OO, \OOO or backref */
+                {
+                    size_t octlen;
+                    if (ruby_scan_oct(p-1, end-(p-1), &octlen) <= 0177) {
+                        /* backref or 7bit octal.
+                           no need to unescape anyway.
+                           re-escaping may break backref */
+                        goto escape_asis;
+                    }
+                }
+                /* xxx: How about more than 199 subexpressions? */
+
+              case '0': /* \0, \0O, \0OO */
+
+              case 'x': /* \xHH */
+              case 'c': /* \cX, \c\M-X */
+              case 'C': /* \C-X, \C-\M-X */
+              case 'M': /* \M-X, \M-\C-X, \M-\cX */
+                p = p-2;
+                if (unescape_escaped_nonascii(mrb, &p, end, enc, buf, encp, err) != 0)
+                    return -1;
+                break;
+
+              case 'u':
+                if (p == end) {
+                    //errcpy(err, "too short escape sequence");
+                    printf("too short escape sequence");
+                    return -1;
+                }
+                if (*p == '{') {
+                    /* \u{H HH HHH HHHH HHHHH HHHHHH ...} */
+                    p++;
+                    if (unescape_unicode_list(mrb, &p, end, buf, encp, err) != 0)
+                        return -1;
+                    if (p == end || *p++ != '}') {
+                        //errcpy(err, "invalid Unicode list");
+                        printf("invalid Unicode list");
+                        return -1;
+                    }
+                    break;
+                }
+                else {
+                    /* \uHHHH */
+                    if (unescape_unicode_bmp(mrb, &p, end, buf, encp, err) != 0)
+                        return -1;
+                    break;
+                }
+
+              case 'p': /* \p{Hiragana} */
+              case 'P':
+                if (!*encp) {
+                    *has_property = 1;
+                }
+                goto escape_asis;
+
+              default: /* \n, \\, \d, \9, etc. */
+escape_asis:
+                smallbuf[0] = '\\';
+                smallbuf[1] = c;
+                mrb_str_buf_cat(mrb, buf, smallbuf, 2);
+                break;
+            }
+            break;
+
+          default:
+            mrb_str_buf_cat(mrb, buf, &c, 1);
+            break;
+        }
+    }
+
+    return 0;
+}
+
+static mrb_value
+mrb_reg_preprocess(mrb_state *mrb, const char *p, const char *end, mrb_encoding *enc,
+        mrb_encoding **fixed_enc, onig_errmsg_buffer err)
+{
+//  return mrb_nil_value();
+
+    mrb_value buf;
+    int has_property = 0;
+
+    //buf = mrb_str_buf_new(0);
+    buf = mrb_str_buf_new(mrb, 0);
+
+    if (mrb_enc_asciicompat(mrb, enc))
+        *fixed_enc = 0;
+    else {
+        *fixed_enc = enc;
+        mrb_enc_associate(mrb, buf, enc);
+    }
+
+    if (unescape_nonascii(mrb, p, end, enc, buf, fixed_enc, &has_property, err) != 0)
+        return mrb_nil_value();
+
+    if (has_property && !*fixed_enc) {
+        *fixed_enc = enc;
+    }
+
+    if (*fixed_enc) {
+        mrb_enc_associate(mrb, buf, *fixed_enc);
+    }
+
+    return buf;
 }
 
 static int
@@ -656,12 +1072,13 @@ mrb_reg_initialize(mrb_state *mrb, mrb_value obj, const char *s, long len,
 {
   struct RRegexp *re = RREGEXP(obj);
   mrb_value unescaped;
+  mrb_encoding *fixed_enc = 0;
   mrb_encoding *enc = mrb_ascii8bit_encoding(mrb);
   if (re->ptr)
     mrb_raise(mrb, E_TYPE_ERROR, "already initialized regexp");
   re->ptr = 0;
 
-  unescaped = mrb_reg_preprocess(mrb, s, s+len, err);
+  unescaped = mrb_reg_preprocess(mrb, s, s+len, enc, &fixed_enc, err);
   if (mrb_nil_p(unescaped))
     return -1;
 
@@ -733,7 +1150,7 @@ mrb_reg_initialize_str(mrb_state *mrb, mrb_value obj, mrb_value str, int options
 static mrb_value
 mrb_reg_initialize_m(mrb_state *mrb, /*int argc, mrb_value *argv,*/ mrb_value self)
 {
-  mrb_value argv[16];
+  mrb_value *argv;
   int argc;
   onig_errmsg_buffer err = "";
   int flags = 0;
@@ -791,7 +1208,7 @@ mrb_reg_initialize_m(mrb_state *mrb, /*int argc, mrb_value *argv,*/ mrb_value se
 static mrb_value
 mrb_reg_init_copy(mrb_state *mrb, mrb_value re/*, mrb_value copy*/)
 {
-  mrb_value argv[16];
+  mrb_value *argv;
   int argc;
   onig_errmsg_buffer err = "";
   const char *s;
@@ -1041,7 +1458,7 @@ mrb_reg_casefold_p(mrb_state *mrb, mrb_value re)
 static mrb_value
 mrb_reg_match_m(mrb_state *mrb, /*int argc, mrb_value *argv,*/ mrb_value re)
 {
-  mrb_value argv[16];
+  mrb_value *argv;
   int argc;
   mrb_value result, str, initpos, b;
   long pos;
@@ -1174,7 +1591,7 @@ match_alloc(mrb_state *mrb)
 static mrb_value
 mrb_match_aref(mrb_state *mrb, /*int argc, mrb_value *argv,*/ mrb_value match)
 {
-  mrb_value argv[16];
+  mrb_value *argv;
   int argc;
   mrb_value idx;
 
@@ -1268,7 +1685,7 @@ update_char_offset(mrb_state *mrb, mrb_value match)
 static mrb_value
 mrb_match_begin(mrb_state *mrb, mrb_value match/*, mrb_value n*/)
 {
-  mrb_value argv[16];
+  mrb_value *argv;
   int argc;
   mrb_value n = argv[0];
   int i;
@@ -1355,7 +1772,7 @@ mrb_match_captures(mrb_state *mrb, mrb_value match)
 static mrb_value
 mrb_match_end(mrb_state *mrb, mrb_value match/*, mrb_value n*/)
 {
-  mrb_value argv[16];
+  mrb_value *argv;
   int argc;
   mrb_value n;
   int i;
@@ -1382,7 +1799,7 @@ mrb_match_end(mrb_state *mrb, mrb_value match/*, mrb_value n*/)
 static mrb_value
 mrb_match_init_copy(mrb_state *mrb, mrb_value obj/*, mrb_value orig*/)
 {
-  mrb_value argv[16];
+  mrb_value *argv;
   int argc;
   struct rmatch *rm;
   mrb_value orig;
@@ -2004,6 +2421,7 @@ mrb_init_regexp(mrb_state *mrb)
 {
   struct RClass *s;
   s = mrb_define_class(mrb, "Regexp", mrb->object_class);
+  MRB_SET_INSTANCE_TT(s, MRB_TT_REGEX);
 
     mrb_define_class_method(mrb, s, "compile",         mrb_reg_s_new_instance, ARGS_ANY());              /* 15.2.15.6.1  */
     mrb_define_class_method(mrb, s, "escape",          mrb_reg_s_quote,        ARGS_REQ(1));             /* 15.2.15.6.2  */
@@ -2041,6 +2459,7 @@ mrb_init_regexp(mrb_state *mrb)
     mrb_define_const(mrb, s, "FIXEDENCODING", mrb_fixnum_value(ARG_ENCODING_FIXED));
 
     s = mrb_define_class(mrb, "MatchData", mrb->object_class);
+    MRB_SET_INSTANCE_TT(s, MRB_TT_MATCH);
     //mrb_undef_class_method(CLASS_OF(rb_cMatch), "new");
 
     mrb_define_method(mrb, s, "[]",              mrb_match_aref,        ARGS_ANY());                     /* 15.2.16.3.1  */
@@ -2084,7 +2503,7 @@ mrb_reg_regsub(mrb_state *mrb, mrb_value str, mrb_value src, struct re_registers
   int no;
 
   val.tt = 0;
-  p = s = ps->buf;
+  p = s = ps->ptr;
   e = s + ps->len;
 
   while (s < e) {
@@ -2193,10 +2612,10 @@ mrb_reg_regsub(mrb_state *mrb, mrb_value str, mrb_value src, struct re_registers
   return val;
 }
 
-static inline NODE *
+static inline mrb_value
 lfp_svar_place(mrb_state *mrb, /*mrb_thread_t *th,*/ mrb_value *lfp)
 {
-    NODE *svar;
+//    NODE *svar;
 
     /*if (lfp && th->local_lfp != lfp) {
       svar = &lfp[-1];
@@ -2204,27 +2623,30 @@ lfp_svar_place(mrb_state *mrb, /*mrb_thread_t *th,*/ mrb_value *lfp)
     else {
       svar = mrb->&th->local_svar;
     }*/
-    svar = mrb->local_svar;
+//    svar = mrb->local_svar;
     /*if (mrb_nil_p(*svar)) {
       *svar = mrb_obj_value(NEW_IF(0, 0, 0));
     }*/
-    return svar;//(NODE *)((*svar).value.p);
+    return mrb->local_svar;//svar;//(NODE *)((*svar).value.p);
 }
 
 static mrb_value
 lfp_svar_get(mrb_state *mrb, /*mrb_thread_t *th,*/ mrb_value *lfp, mrb_int key)
 {
   //mrb_value *regs;
-  NODE *svar = lfp_svar_place(mrb, /*th,*/ lfp);
+//  NODE *svar = lfp_svar_place(mrb, /*th,*/ lfp);
   //regs = mrb->stack;
 
   switch (key) {
     case 0:
-      return svar->u1.value;
+//      return svar->u1.value;
+        return mrb->local_svar;
     case 1:
-      return svar->u2.value;
+//      return svar->u2.value;
+        return mrb->local_svar;
     default: {
-      return svar->u3.value;
+//      return svar->u3.value;
+        return mrb->local_svar;
       /*const mrb_value hash = regs[GETARG_C(*svar)];//svar->u3.value;
 
       if (mrb_nil_p(hash)) {
@@ -2241,18 +2663,21 @@ static void
 lfp_svar_set(mrb_state *mrb, /*mrb_thread_t *th,*/ mrb_value *lfp, mrb_int key, mrb_value val)
 {
   //mrb_value *regs;
-  NODE *svar = lfp_svar_place(mrb, /*th,*/ lfp);
+//  NODE *svar = lfp_svar_place(mrb, /*th,*/ lfp);
   //regs = mrb->stack;
 
   switch (key) {
     case 0:
-      svar->u1.value = val;
+//      svar->u1.value = val;
+      mrb->local_svar = val;
       return;
     case 1:
-      svar->u2.value = val;
+//      svar->u2.value = val;
+      mrb->local_svar = val;
       return;
     default: {
-      svar->u3.value = val;
+//      svar->u3.value = val;
+      mrb->local_svar = val;
       //mrb_value hash = *svar;//svar->u3.value;
 
       //if (mrb_nil_p(hash)) {

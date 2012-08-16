@@ -32,6 +32,11 @@
 #include <string.h>
 #include "regint.h"
 
+/* temporary definition */
+#define xmalloc  malloc
+#define xrealloc realloc
+#define xfree    free
+
 OnigEncoding OnigEncDefaultCharEncoding = ONIG_ENCODING_INIT_DEFAULT;
 
 extern int

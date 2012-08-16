@@ -63,7 +63,9 @@ mrb_value mrb_str_buf_cat(mrb_state *mrb, mrb_value str, const char *ptr, int le
 
 char *mrb_string_value_cstr(mrb_state *mrb, mrb_value *ptr);
 char *mrb_string_value_ptr(mrb_state *mrb, mrb_value ptr);
+mrb_value mrb_str_subseq(mrb_state *mrb, mrb_value str, int beg, int len);
 int mrb_str_sublen(mrb_state *mrb, mrb_value str, int pos);
+mrb_value mrb_str_size(mrb_state *mrb, mrb_value self);
 int mrb_str_offset(mrb_state *mrb, mrb_value str, int pos);
 mrb_value mrb_str_dup(mrb_state *mrb, mrb_value str); /* mrb_str_dup */
 mrb_value mrb_str_intern(mrb_state *mrb, mrb_value self);
