@@ -14,6 +14,9 @@
 #include "mruby/numeric.h"
 #include "opcode.h"
 #include "node.h"
+#ifdef ENABLE_REGEXP
+#include "re.h"
+#endif
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -1796,6 +1799,19 @@ codegen(codegen_scope *s, node *tree, int val)
         }
         n = n->cdr;
       }
+    }
+    break;
+
+  case NODE_REGX:
+    if (val) {
+      char *p = (char*)tree->cdr->car;
+      size_t len = (intptr_t)tree->cdr->cdr;
+      //TODO: support regex option
+      int off = new_lit(s, mrb_reg_regcomp(s->mrb, mrb_str_new(s->mrb, p, len)));
+//      int off = new_lit(s, mrb_reg_new_str(mrb, mrb_str_new(s->mrb, p, len), 0));
+
+      genop(s, MKOP_ABx(OP_LOADL, cursp(), off));
+      push();
     }
     break;
 

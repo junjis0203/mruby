@@ -10,7 +10,7 @@
 //#include <sys/types.h>
 #include <stdio.h>
 
-#include "node.h"
+//#include "node.h"
 #include "regex.h"
 #include "encoding.h"
 #include "st.h"
