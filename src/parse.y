@@ -4453,6 +4453,7 @@ parser_yylex(parser_state *p)
 #if 0
 	p->lex_strterm = new_strterm(p, str_regexp, term, paren);
 #endif
+        p->regexp = 1;
 	return tREGEXP_BEG;
 
       case 's':
