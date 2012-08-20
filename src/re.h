@@ -57,6 +57,10 @@ struct RRegexp {
 #define RREGEXP_SRC_LEN(r)  (RREGEXP_SRC(r)->len)
 int re_adjust_startpos(struct re_pattern_buffer *bufp, const char *string, int size, int startpos, int range);
 
+#define RE_OPTION_IGNORECASE ONIG_OPTION_IGNORECASE
+#define RE_OPTION_EXTENDED   ONIG_OPTION_EXTEND
+#define RE_OPTION_MULTILINE  ONIG_OPTION_MULTILINE
+
 typedef struct re_pattern_buffer Regexp;
 
 //#define RMATCH(obj)  (R_CAST(RMatch)(obj))
@@ -74,6 +78,7 @@ void mrb_match_busy (mrb_value);
 
 mrb_value mrb_reg_quote(mrb_state *mrb, mrb_value str);
 mrb_value mrb_reg_regcomp(mrb_state *mrb, mrb_value str);
+mrb_value mrb_reg_new_str(mrb_state *mrb, mrb_value s, int options);
 mrb_value mrb_reg_match_str(mrb_state *mrb, mrb_value re, mrb_value str);
 mrb_value mrb_reg_nth_match(mrb_state *mrb, mrb_int nth, mrb_value match);
 mrb_value mrb_backref_get(mrb_state *mrb);

@@ -22,6 +22,7 @@
 #include "mruby/compile.h"
 #include "mruby/proc.h"
 #include "node.h"
+#include "re.h"
 
 #include <stdio.h>
 #include <errno.h>
@@ -705,12 +706,11 @@ new_dsym(parser_state *p, node *a)
   return cons((node*)NODE_DSYM, new_dstr(p, a));
 }
 
-//TODO: support regex option
-// (:regx . a)
+// (:regx . (str . opt))
 static node*
-new_regx(parser_state *p, node *a)
+new_regx(parser_state *p, node *str, int opt)
 {
-  return cons((node*)NODE_REGX, (node*)a);
+  return cons((node*)NODE_REGX, cons(str, (node*)(intptr_t)opt));
 }
 
 // (:backref . n)
@@ -2515,10 +2515,9 @@ string_interp	: tSTRING_PART
 		    }
 		;
 
-regexp		: tREGEXP_BEG tSTRING
+regexp		: tREGEXP_BEG tREGEXP
 		    {
-		      //TODO: support regex option
-		      $$ = new_regx(p, $2);
+		      $$ = $2;
 		    }
 		;
 
@@ -3277,7 +3276,7 @@ scan_hex(const int *start, int len, int *retlen)
 }
 
 static int
-read_escape(parser_state *p)
+read_escape(parser_state *p, int regexp)
 {
   int c;
 
@@ -3346,10 +3345,22 @@ read_escape(parser_state *p)
     return c;
 
   case 'b':	/* backspace */
-    return '\010';
+    if (regexp) {
+      tokadd(p, '\\');
+      return 'b';
+    }
+    else {
+      return '\010';
+    }
 
   case 's':	/* space */
-    return ' ';
+    if (regexp) {
+      tokadd(p, '\\');
+      return 's';
+    }
+    else {
+      return ' ';
+    }
 
   case 'M':
     if ((c = nextc(p)) != '-') {
@@ -3358,7 +3369,7 @@ read_escape(parser_state *p)
       return '\0';
     }
     if ((c = nextc(p)) == '\\') {
-      return read_escape(p) | 0x80;
+      return read_escape(p, regexp) | 0x80;
     }
     else if (c == -1) goto eof;
     else {
@@ -3373,7 +3384,7 @@ read_escape(parser_state *p)
     }
   case 'c':
     if ((c = nextc(p))== '\\') {
-      c = read_escape(p);
+      c = read_escape(p, regexp);
     }
     else if (c == '?')
       return 0177;
@@ -3386,12 +3397,53 @@ read_escape(parser_state *p)
     return '\0';
 
   default:
+    if (regexp) {
+      tokadd(p, '\\');
+    }
     return c;
   }
 }
 
 static int
-parse_string(parser_state *p, int term)
+regx_options(parser_state *p)
+{
+    int options = 0;
+    int c;
+
+    newtok(p);
+    while (c = nextc(p), ISALPHA(c)) {
+	switch (c) {
+	  case 'i':
+	    options |= RE_OPTION_IGNORECASE;
+	    break;
+	  case 'x':
+	    options |= RE_OPTION_EXTENDED;
+	    break;
+	  case 'm':
+	    options |= RE_OPTION_MULTILINE;
+	    break;
+	/*
+	  case 'o':
+	    options |= RE_OPTION_ONCE;
+	    break;
+	*/
+	  default:
+	    tokadd(p, c);
+	    break;
+	}
+    }
+    pushback(p, c);
+    if (toklen(p)) {
+    	char buf[256];
+	tokfix(p);
+    	snprintf(buf, sizeof(buf), "unknown regexp option%s - %s", toklen(p) > 1 ? "s" : "", tok(p));
+	yyerror(p, buf);
+    }
+    return options;
+}
+
+static int
+parse_string(parser_state *p, int term, int regexp)
 {
   int c;
 
@@ -3409,7 +3461,7 @@ parse_string(parser_state *p, int term)
       }
       else {
 	pushback(p, c);
-	tokadd(p, read_escape(p));
+	tokadd(p, read_escape(p, regexp));
       }
       continue;
     }
@@ -3433,8 +3485,17 @@ parse_string(parser_state *p, int term)
   tokfix(p);
   p->lstate = EXPR_END;
   p->sterm = 0;
-  yylval.nd = new_str(p, tok(p), toklen(p));
-  return tSTRING;
+  if (regexp) {
+    node* str = new_str(p, tok(p), toklen(p));
+    int options = regx_options(p);
+    yylval.nd = new_regx(p, str, options);
+    p->regexp = 0;
+    return tREGEXP;
+  }
+  else {
+    yylval.nd = new_str(p, tok(p), toklen(p));
+    return tSTRING;
+  }
 }
 
 static node*
@@ -3509,7 +3570,7 @@ parser_yylex(parser_state *p)
   int token_column;
 
   if (p->sterm) {
-    return parse_string(p, p->sterm);
+    return parse_string(p, p->sterm, p->regexp);
   }
   cmd_state = p->cmd_start;
   p->cmd_start = FALSE;
@@ -3785,7 +3846,7 @@ parser_yylex(parser_state *p)
       }
       else {
 	pushback(p, c);
-	c = read_escape(p);
+	c = read_escape(p, p->regexp);
 	tokadd(p, c);
       }
     }
@@ -4195,6 +4256,7 @@ parser_yylex(parser_state *p)
       p->lex_strterm = new_strterm(p, str_regexp, '/', 0);
 #endif
       p->sterm = '/';
+      p->regexp = 1;
       return tREGEXP_BEG;
     }
     if ((c = nextc(p)) == '=') {
@@ -4209,6 +4271,7 @@ parser_yylex(parser_state *p)
       p->lex_strterm = new_strterm(p, str_regexp, '/', 0);
 #endif
       p->sterm = '/';
+      p->regexp = 1;
       return tREGEXP_BEG;
     }
     if (p->lstate == EXPR_FNAME || p->lstate == EXPR_DOT) {
@@ -4742,6 +4805,7 @@ mrb_parser_parse(parser_state *p, mrbc_context *c)
   p->in_def = p->in_single = FALSE;
   p->nerr = p->nwarn = 0;
   p->sterm = 0;
+  p->regexp = 0;
 
   parser_init_cxt(p, c);
   yyparse(p);
@@ -5463,8 +5527,7 @@ parser_dump(mrb_state *mrb, node *tree, int offset)
     break;
 
   case NODE_REGX:
-    //TODO: support regex option
-    printf("NODE_REGX /%s/\n", (char*)tree->cdr->car);
+    printf("NODE_REGX /%s/ opt %d\n", (char*)tree->car->cdr->car, (int)(intptr_t)tree->cdr);
     break;
 
   case NODE_SYM:

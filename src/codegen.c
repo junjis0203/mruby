@@ -1804,11 +1804,10 @@ codegen(codegen_scope *s, node *tree, int val)
 
   case NODE_REGX:
     if (val) {
-      char *p = (char*)tree->cdr->car;
-      size_t len = (intptr_t)tree->cdr->cdr;
-      //TODO: support regex option
-      int off = new_lit(s, mrb_reg_regcomp(s->mrb, mrb_str_new(s->mrb, p, len)));
-//      int off = new_lit(s, mrb_reg_new_str(mrb, mrb_str_new(s->mrb, p, len), 0));
+      char *p = (char*)tree->car->cdr->car;
+      size_t len = (intptr_t)tree->car->cdr->cdr;
+      int opts = (int)tree->cdr;
+      int off = new_lit(s, mrb_reg_new_str(s->mrb, mrb_str_new(s->mrb, p, len), opts));
 
       genop(s, MKOP_ABx(OP_LOADL, cursp(), off));
       push();
