@@ -720,7 +720,17 @@ mrb_string_value_ptr(mrb_state *mrb, mrb_value ptr)
 static mrb_value
 mrb_str_match(mrb_state *mrb, mrb_value self/* x */)
 {
-  return mrb_nil_value();
+  mrb_value obj;
+
+  mrb_get_args(mrb, "o", &obj);
+  if (mrb_type(obj) == MRB_TT_REGEX) {
+    return mrb_reg_match_str(mrb, obj, self);
+  }
+  else {
+    //return mrb_funcall(mrb, obj, "=~", 1, self);
+    /* temporary implementation because Object#=~ is not defined */
+    return mrb_nil_value();
+  }
 }
 
 static inline long
@@ -1410,7 +1420,8 @@ str_gsub(mrb_state *mrb, mrb_value str, mrb_int bang)
   }
   mrb_reg_search(mrb, pat, str, last, 0);
   RBASIC(dest)->c = mrb_obj_class(mrb, str);
-  return str;
+  //return str;
+  return dest;
 }
 
 /* 15.2.10.5.18 */
@@ -2124,7 +2135,8 @@ mrb_str_scan(mrb_state *mrb, mrb_value str)
 
   mrb_get_args(mrb, "o&", &pat, &b);
   pat = get_pat(mrb, pat, 1);
-  if (!mrb_block_given_p()) {
+//  if (!mrb_block_given_p()) {
+  if (mrb_nil_p(b)) {
     mrb_value ary = mrb_ary_new(mrb);
 
     while (!mrb_nil_p(result = scan_once(mrb, str, pat, &start))) {
@@ -2409,7 +2421,85 @@ static mrb_value
 mrb_str_sub_bang(mrb_state *mrb, mrb_value str)
 {
   str_modify(mrb, mrb_str_ptr(str));
-  return mrb_nil_value();
+//  return mrb_nil_value();
+
+  mrb_value *argv;
+  int argc;
+  mrb_value pat, val, repl, match, dest = mrb_nil_value();
+  struct re_registers *regs;
+  mrb_int beg, n;
+  mrb_int beg0, end0;
+  mrb_int offset, blen, len, last;
+  char *sp, *cp;
+
+//  if (bang) str_modify(mrb, mrb_str_ptr(str));
+  mrb_get_args(mrb, "*", &argv, &argc);
+  switch (argc) {
+    case 1:
+      /*RETURN_ENUMERATOR(str, argc, argv);*/
+      break;
+    case 2:
+      repl = argv[1];
+      mrb_string_value(mrb, &repl);
+      break;
+    default:
+      mrb_raise(mrb, E_ARGUMENT_ERROR, "wrong number of arguments (%d for 2)", argc);
+  }
+
+  pat = get_pat(mrb, argv[0], 1);
+  beg = mrb_reg_search(mrb, pat, str, 0, 0);
+  if (beg < 0) {
+//    if (bang) return mrb_nil_value();  /* no match, no substitution */
+//    return mrb_str_dup(mrb, str);
+      return mrb_nil_value();
+  }
+
+  offset = 0;
+  n = 0;
+  blen = RSTRING_LEN(str) + 30;
+  dest = mrb_str_buf_new(mrb, blen);
+  sp = RSTRING_PTR(str);
+  cp = sp;
+
+//  do {
+    n++;
+    match = mrb_backref_get(mrb);
+    regs = RMATCH_REGS(match);
+    beg0 = BEG(0);
+    end0 = END(0);
+      val = mrb_reg_regsub(mrb, repl, str, regs, pat);
+
+    len = beg - offset;  /* copy pre-match substr */
+    if (len) {
+      mrb_str_buf_cat(mrb, dest, cp, len);
+    }
+
+    mrb_str_buf_append(mrb, dest, val);
+
+    last = offset;
+    offset = end0;
+    if (beg0 == end0) {
+      /*
+       * Always consume at least one character of the input string
+       * in order to prevent infinite loops.
+       */
+//      if (RSTRING_LEN(str) <= end0) break;
+      len = RSTRING_LEN(str)-end0;
+      mrb_str_buf_cat(mrb, dest, RSTRING_PTR(str)+end0, len);
+      offset = end0 + len;
+    }
+    cp = RSTRING_PTR(str) + offset;
+//    if (offset > RSTRING_LEN(str)) break;
+//    beg = mrb_reg_search(mrb, pat, str, offset, 0);
+//  } while (beg >= 0);
+  if (RSTRING_LEN(str) > offset) {
+    mrb_str_buf_cat(mrb, dest, cp, RSTRING_LEN(str) - offset);
+  }
+  mrb_reg_search(mrb, pat, str, last, 0);
+  RBASIC(dest)->c = mrb_obj_class(mrb, str);
+  //return str;
+//  return dest;
+  str_replace(mrb, mrb_str_ptr(str), mrb_str_ptr(dest));
 }
 #endif //ENABLE_REGEXP
 
